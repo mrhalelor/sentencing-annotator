@@ -156,12 +156,10 @@ with save_col:
 with next_col:
     if st.button("Next"):
         st.session_state.row_index += 1
-        st.experimental_rerun()
 
 with back_col:
     if st.button("Back") and row_idx > 0:
         st.session_state.row_index -= 1
-        st.experimental_rerun()
 
 with skip_col:
     if st.button("Skip"):
@@ -170,14 +168,12 @@ with skip_col:
         else:
             df.at[row_idx, "reviewed_defense_ask"] = {"type": "No Ask", "details": ""}
         st.session_state.row_index += 1
-        st.experimental_rerun()
 
 st.markdown("---")
 
 # Switch between reviewing sentence / defense ask
 if st.button("Switch to Reviewing Defense Ask" if mode=="sentence" else "Switch to Reviewing Sentence Info"):
     st.session_state.mode = "defense" if mode=="sentence" else "sentence"
-    st.experimental_rerun()
 
 # -------------------------------------------------------------------
 # Export
@@ -194,3 +190,4 @@ if st.button("Export Annotated Excel"):
         file_name="sentencing2_reviewed.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
