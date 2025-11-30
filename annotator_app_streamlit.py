@@ -2,9 +2,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 from io import BytesIO
-
-st.write("App loaded")
-
+import ast
 
 st.set_page_config(layout="wide", page_title="Sentencing Review Annotator")
 
@@ -39,24 +37,19 @@ if "row_index" not in st.session_state:
     st.session_state.row_index = 0
 
 if "mode" not in st.session_state:
-    # mode = "sentence" or "defense"
+    # Always start each row by reviewing sentence_info
     st.session_state.mode = "sentence"
 
-# Convenience access
 row_idx = st.session_state.row_index
 mode = st.session_state.mode
 
 # -------------------------------------------------------------------
-# Annotation UI (reused for both fields)
+# Function: annotation UI
 # -------------------------------------------------------------------
 def annotation_ui(existing):
-    """
-    existing: dict or None
-    Returns updated annotation dict.
-    """
     ask_options = ["", "No Ask", "Incarceration", "Probation", "Time Served", "Non-custodial", "Custom"]
 
-    if existing is None:
+    if existing is None or not isinstance(existing, dict):
         existing = {"type": "", "details": ""}
 
     st.markdown("### Classification")
@@ -67,7 +60,6 @@ def annotation_ui(existing):
     )
     existing["type"] = ask_type
 
-    # Incarceration flow
     if ask_type == "Incarceration":
         unit = st.radio("Unit", ["months", "years"], horizontal=True)
         col_a, col_b = st.columns(2)
@@ -81,59 +73,73 @@ def annotation_ui(existing):
         existing["num_max"] = int(num_max)
         existing["details"] = f"{num_min}-{num_max} {unit}" if num_max else f"{num_min} {unit}"
 
-    elif ask_type == "Non-custodial":
+    elif ask_type in ["Non-custodial", "Custom"]:
         txt = st.text_area("Details:", value=existing.get("details", ""), height=80)
         existing["details"] = txt
 
-    elif ask_type == "Custom":
-        txt = st.text_area("Custom Ask Text:", value=existing.get("details", ""), height=100)
-        existing["details"] = txt
-
-    elif ask_type == "Time Served":
-        existing["details"] = ""
-
-    elif ask_type == "No Ask":
+    elif ask_type in ["Time Served", "No Ask"]:
         existing["details"] = ""
 
     return existing
 
 # -------------------------------------------------------------------
-# Row display
+# Row handling + skipping rows with missing text
 # -------------------------------------------------------------------
-if row_idx < 0:
-    st.session_state.row_index = 0
-    row_idx = 0
-if row_idx >= len(df):
+def advance_to_next_valid_row(start_idx):
+    """Return index of next valid row (both fields present), or None if none remain."""
+    for i in range(start_idx, len(df)):
+        row = df.iloc[i]
+        if isinstance(row["sentence_info"], str) and isinstance(row["defense_ask"], str):
+            return i
+    return None
+
+# Move to next valid row automatically if needed
+row_idx = advance_to_next_valid_row(row_idx)
+if row_idx is None:
     st.success("🎉 All rows reviewed!")
     st.stop()
 
+st.session_state.row_index = row_idx  # ensure state is clean
+
 row = df.iloc[row_idx]
+
+# -------------------------------------------------------------------
+# Header Info
+# -------------------------------------------------------------------
 st.markdown(f"## Reviewing Row {row_idx+1} / {len(df)}")
 
 st.markdown(f"""
 **Case Number:** `{row['case_number']}`  
 **Party:** `{row['party']}`  
-**Reviewing:** **{'Sentence Info' if mode=='sentence' else 'Defense Ask'}**
+""")
+
+# Status indicators
+sent_done = isinstance(row["reviewed_sentence"], dict)
+ask_done = isinstance(row["reviewed_defense_ask"], dict)
+
+st.markdown(f"""
+- Sentence Info Reviewed: {'✅' if sent_done else '❌'}  
+- Defense Ask Reviewed: {'✅' if ask_done else '❌'}
 """)
 
 # -------------------------------------------------------------------
-# Text display
+# Select which text to show based on mode
 # -------------------------------------------------------------------
 if mode == "sentence":
     raw_text = row["sentence_info"]
     existing_ann = row["reviewed_sentence"]
+    st.subheader("Reviewing: Sentence Info")
 else:
     raw_text = row["defense_ask"]
     existing_ann = row["reviewed_defense_ask"]
+    st.subheader("Reviewing: Defense Ask")
 
 st.markdown("### Raw Text")
-st.write(raw_text if isinstance(raw_text, str) else "(empty)")
+st.write(raw_text)
 
-# Convert stored JSON-like dicts
+# Load stored annotation (string/dict)
 if isinstance(existing_ann, str):
-    # If it was stored as string, try literal_eval or fallback
     try:
-        import ast
         existing_ann = ast.literal_eval(existing_ann)
     except:
         existing_ann = {"type": "", "details": ""}
@@ -141,43 +147,34 @@ if isinstance(existing_ann, str):
 annotation = annotation_ui(existing_ann)
 
 # -------------------------------------------------------------------
-# Buttons: save, navigation, mode toggle
+# Finalization Logic
 # -------------------------------------------------------------------
-save_col, next_col, back_col, skip_col = st.columns([2,1,1,1])
+if st.button("💾 Finalize This Section"):
 
-with save_col:
-    if st.button("💾 Set Final for This Row"):
-        if mode == "sentence":
-            df.at[row_idx, "reviewed_sentence"] = annotation
-        else:
-            df.at[row_idx, "reviewed_defense_ask"] = annotation
-        st.success("Saved!")
+    # Save data
+    if mode == "sentence":
+        df.at[row_idx, "reviewed_sentence"] = annotation
+        st.session_state.mode = "defense"     # move automatically
+    else:
+        df.at[row_idx, "reviewed_defense_ask"] = annotation
 
-with next_col:
-    if st.button("Next"):
-        st.session_state.row_index += 1
+        # If both sections done → move forward
+        sent_done = isinstance(df.at[row_idx, "reviewed_sentence"], dict)
+        ask_done = isinstance(df.at[row_idx, "reviewed_defense_ask"], dict)
 
-with back_col:
-    if st.button("Back") and row_idx > 0:
-        st.session_state.row_index -= 1
+        if sent_done and ask_done:
+            next_row = advance_to_next_valid_row(row_idx + 1)
+            if next_row is None:
+                st.success("🎉 All rows reviewed!")
+                st.stop()
 
-with skip_col:
-    if st.button("Skip"):
-        if mode == "sentence":
-            df.at[row_idx, "reviewed_sentence"] = {"type": "No Ask", "details": ""}
-        else:
-            df.at[row_idx, "reviewed_defense_ask"] = {"type": "No Ask", "details": ""}
-        st.session_state.row_index += 1
-
-st.markdown("---")
-
-# Switch between reviewing sentence / defense ask
-if st.button("Switch to Reviewing Defense Ask" if mode=="sentence" else "Switch to Reviewing Sentence Info"):
-    st.session_state.mode = "defense" if mode=="sentence" else "sentence"
+            st.session_state.row_index = next_row
+            st.session_state.mode = "sentence"  # reset mode for next row
 
 # -------------------------------------------------------------------
 # Export
 # -------------------------------------------------------------------
+st.markdown("---")
 st.markdown("## Export Results")
 
 if st.button("Export Annotated Excel"):
@@ -190,4 +187,3 @@ if st.button("Export Annotated Excel"):
         file_name="sentencing2_reviewed.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
